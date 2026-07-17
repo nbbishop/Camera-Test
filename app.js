@@ -66,13 +66,6 @@ window.addEventListener("message", (event) => {
   if (!data || !data.messageName) return;
 
   switch (data.messageName) {
-    case "applicationInit":
-      // Onshape acknowledges our app is registered and ready.
-      ready = true;
-      setStatus("ready", "connected");
-      placeBtn.disabled = false;
-      break;
-
     case "cameraProperties": {
       const req = pendingCameraRequests[data.requestId];
       if (req) {
@@ -94,17 +87,17 @@ function setStatus(cls, text) {
   statusEl.textContent = text;
 }
 
-// Onshape will not message an app that hasn't first announced itself.
+// Onshape will not message an app that hasn't first sent a valid
+// message. keepAlive is the documented first message to send — there
+// is no separate "ready" reply to wait for, so we enable the button
+// right after sending it.
 function initHandshake() {
-  postToOnshape({ messageName: "applicationInit" });
   sendKeepAlive();
   setInterval(sendKeepAlive, 20000);
 
-  // If we don't hear back, surface that instead of hanging on
-  // "connecting..." forever.
-  setTimeout(() => {
-    if (!ready) setStatus("error", "no response from Onshape");
-  }, 5000);
+  ready = true;
+  setStatus("ready", "connected");
+  placeBtn.disabled = false;
 }
 
 // ---------- Storage ----------
