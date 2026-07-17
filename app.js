@@ -10,6 +10,14 @@ const workspaceId = params.get("workspaceId") || params.get("versionId");
 const elementId = params.get("elementId");
 const server = params.get("server") || "https://cad.onshape.com";
 
+console.log("%c[boot params]", "background: cyan; color: black;", {
+  documentId,
+  workspaceId,
+  elementId,
+  server,
+  fullQueryString: window.location.search,
+});
+
 const statusEl = document.getElementById("status");
 const placeBtn = document.getElementById("placeBtn");
 const listEl = document.getElementById("cameraList");
@@ -59,12 +67,23 @@ function requestCameraProperties() {
 }
 
 window.addEventListener("message", (event) => {
+  // Log everything BEFORE the origin check — if event.origin doesn't
+  // exactly match `server`, the check below silently drops the
+  // message before it's ever seen. Logging first turns that into a
+  // visible mismatch instead of dead silence.
+  console.log(
+    "%c[raw message]",
+    "background: orange; color: black;",
+    "origin:", event.origin,
+    "| expected server:", server,
+    "| data:", event.data
+  );
+
   // SECURITY: only accept messages from the Onshape server this
   // iframe was loaded from. Do not remove this check.
   if (event.origin !== server) return;
 
   const data = event.data;
-  console.log("%c[Onshape message]", "background: yellow; color: black;", data);
   if (!data || !data.messageName) return;
 
   switch (data.messageName) {
