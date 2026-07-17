@@ -1,71 +1,63 @@
 # Camera Bookmarks — Onshape Application Extension
 
-Captures the current viewport camera (view/projection matrices + FOV)
-from a chosen Part Studio/Assembly tab and saves it as a named
-bookmark.
+Places named camera bookmarks in a document, then shows a live PIP
+preview of that saved viewpoint using Onshape's own server-rendered
+image — not a reconstructed/tessellated scene.
 
-## Architecture (confirmed against current official docs)
+## Architecture
 
-- This app must be registered as an **Element Tab** extension, not
-  Element Right Panel — `requestCameraProperties` is only supported
-  there.
-- Element Tab does **not** support `{$...}` Action URL placeholders.
-  Leave the Action URL plain: `https://nbbishop.github.io/Camera-Test/`
-  — Onshape appends `documentId`, `workspaceId`/`versionId`,
-  `elementId`, `server`, etc. as query params automatically.
-- Your app's own `elementId` (its tab) is different from the
-  `graphicsElementId` of the Part Studio/Assembly you want the camera
-  from. Since your app is a separate tab, it has no automatic
-  knowledge of "the tab you were just looking at" — you pick the
-  target explicitly via Onshape's native **Select Item** dialog
-  (`openSelectItemDialog` / `itemSelectedInSelectItemDialog`
-  messages), no custom REST calls needed.
+- **Element Tab** extension (required for `requestCameraProperties`).
+- **Capture**: native `openSelectItemDialog` picks the target Part
+  Studio/Assembly; `requestCameraProperties` grabs its live camera
+  transform (`viewMatrix`, `projectionMatrix`, FOV, projection type).
+- **PIP preview**: fetches a real shaded-view image from Onshape's
+  `shadedviews` REST endpoint using the saved camera's transform —
+  this is Onshape actually rendering the current model from that
+  viewpoint, not us reconstructing geometry in Three.js.
+- **Auth**: `shadedviews` needs an OAuth Bearer token, which Element
+  Tab extensions don't get automatically. A popup-based OAuth flow
+  (via the Cloudflare Worker) handles this without ever navigating
+  the tab itself away — only the popup navigates, so `documentId`/
+  `workspaceId`/`elementId` context is preserved throughout.
+- **Refresh**: manual button only, by design — avoids burning API
+  quota on auto-refresh (this was flagged after hitting quota on the
+  wireframe viewer previously). Event-triggered refresh is a possible
+  future upgrade, not built.
 
-## Setup
+## Known unverified piece — check this first when testing
 
-1. Host this folder on GitHub Pages (unchanged).
-2. Dev portal → your app → Extensions → set **Location = Element Tab**.
-   Action URL = plain hosted URL, no placeholder tokens.
-3. In a document: **+ menu → Add Application** → pick this app. It
-   opens as its own tab.
+`cameraProperties` returns a 16-number `viewMatrix`; `shadedviews`
+expects a 12-number row-major `[rotation | translation]` string. The
+conversion in `viewMatrixTo12()` just takes the first 12 of the 16 —
+this assumes the last row is the standard `[0,0,0,1]` homogeneous row,
+which hasn't been confirmed. **If the PIP image looks rotated, skewed,
+or facing the wrong way, this conversion is the first place to fix** —
+log the raw 16-element array and compare against what a correct
+render needs.
 
-## Workflow
+## Setup (in addition to earlier steps)
 
-1. Open the Part Studio/Assembly tab you want to bookmark from, orbit
-   to the view you want.
-2. Switch to this extension's tab.
-3. Click **Choose Target Tab…** — Onshape's native picker opens; pick
-   the Part Studio/Assembly.
-4. Click **+ Place Camera Here** — captures that tab's current camera.
-
-Note: per Onshape's docs, the target tab "must have been opened at
-least once in the current session" for `requestCameraProperties` to
-return `isValid: true`.
+1. Update the Worker (`worker.js`) — the `/oauth/callback` handler now
+   returns a page that `postMessage`s the token back to the opener
+   and closes itself, instead of redirecting. Full replacement given
+   separately.
+2. First time you click "preview" on a camera, a popup will ask you
+   to sign in / authorize — this only needs to happen once per token
+   lifetime (roughly the OAuth token's expiry, currently not refreshed
+   automatically — re-auth via the popup again once it expires).
+3. Make sure popups aren't blocked for `nbbishop.github.io`.
 
 ## Stored camera shape
 
-```json
-{
-  "name": "Camera 1",
-  "targetElementId": "...",
-  "targetElementName": "Part Studio 1",
-  "projectionType": "perspective | orthographic",
-  "viewMatrix": [16 numbers],
-  "projectionMatrix": [16 numbers],
-  "verticalFieldOfView": number,
-  "viewportWidth": number,
-  "viewportHeight": number,
-  "createdAt": timestamp
-}
-```
-
-Stored raw (not decomposed into position/target) since the exact
-index mapping for camera position within `viewMatrix` wasn't fully
-verifiable from docs alone — log a real response and confirm before
-building the gizmo/PIP renderer that will need to decompose this.
+Unchanged from before, plus `targetElementType` (`'partstudio'` or
+`'assembly'`, from the picker's `itemSelectedInSelectItemDialog`
+response) — needed to pick the right REST path
+(`/api/v10/partstudios/...` vs `/api/v10/assemblies/...`).
 
 ## Not yet built
 
-- Camera gizmo rendering (Three.js frustum overlay at saved transform)
-- Live PIP viewport showing the saved camera's POV while editing
+- Event-triggered auto-refresh (kept "in the back pocket" per
+  discussion, not implemented)
+- Token refresh (currently just re-runs the full popup auth flow once
+  the stored token expires)
 - Syncing bookmarks to the document itself instead of `localStorage`

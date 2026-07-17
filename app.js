@@ -19,9 +19,14 @@ const placeBtn = document.getElementById("placeBtn");
 const pickBtn = document.getElementById("pickBtn");
 const targetLabel = document.getElementById("targetLabel");
 const listEl = document.getElementById("cameraList");
+const pipTitle = document.getElementById("pipTitle");
+const pipImg = document.getElementById("pipImg");
+const pipStatus = document.getElementById("pipStatus");
+const refreshPipBtn = document.getElementById("refreshPipBtn");
 
 let targetElementId = null;
 let targetElementName = null;
+let targetElementType = null;
 let pendingCameraRequest = null;
 
 // ---------- Client messaging plumbing ----------
@@ -85,6 +90,7 @@ window.addEventListener("message", (event) => {
     case "itemSelectedInSelectItemDialog":
       targetElementId = data.elementId;
       targetElementName = data.elementName || data.elementId;
+      targetElementType = data.elementType; // e.g. 'partstudio' | 'assembly'
       targetLabel.textContent = `Target: ${targetElementName}`;
       placeBtn.disabled = false;
       break;
@@ -103,7 +109,128 @@ window.addEventListener("message", (event) => {
   }
 });
 
-function setStatus(cls, text) {
+// ---------- OAuth (popup flow — never navigates this tab away) ----------
+
+const OAUTH_START_URL = "https://shy-lab-1d0e.bishopcents.workers.dev/oauth/start";
+const TOKEN_KEY = "onshape_access_token";
+
+function getStoredToken() {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    if (!raw) return null;
+    const { access_token, expiresAt } = JSON.parse(raw);
+    if (Date.now() > expiresAt) return null;
+    return access_token;
+  } catch {
+    return null;
+  }
+}
+
+function storeToken(access_token, expires_in) {
+  localStorage.setItem(
+    TOKEN_KEY,
+    JSON.stringify({
+      access_token,
+      expiresAt: Date.now() + (expires_in - 60) * 1000,
+    })
+  );
+}
+
+function requestAuthToken() {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(OAUTH_START_URL, "onshape-oauth", "width=500,height=650");
+    if (!popup) {
+      reject(new Error("Popup blocked — allow popups for this site and try again"));
+      return;
+    }
+
+    function onMessage(event) {
+      if (!event.data || event.data.type !== "onshape-oauth-token") return;
+      window.removeEventListener("message", onMessage);
+      clearInterval(closeTimer);
+      storeToken(event.data.access_token, event.data.expires_in);
+      resolve(event.data.access_token);
+    }
+    window.addEventListener("message", onMessage);
+
+    const closeTimer = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(closeTimer);
+        window.removeEventListener("message", onMessage);
+        reject(new Error("Sign-in window was closed before completing"));
+      }
+    }, 500);
+  });
+}
+
+async function ensureAuthToken() {
+  const existing = getStoredToken();
+  if (existing) return existing;
+  return requestAuthToken();
+}
+
+// ---------- Shaded view (PIP) ----------
+
+// NOTE: shadedviews expects a 12-number row-major [rotation|translation]
+// matrix as a comma string. cameraProperties gives us a 16-number array
+// whose exact layout we haven't fully confirmed (see README). This drops
+// the last row (assumed to be the [0,0,0,1] homogeneous row) and takes
+// the first 12 — verify the resulting image orientation looks right
+// once tested, and adjust the slice/order here if it's flipped/skewed.
+function viewMatrixTo12(viewMatrix16) {
+  return viewMatrix16.slice(0, 12).join(",");
+}
+
+async function fetchShadedView(camera) {
+  const token = await ensureAuthToken();
+
+  const elementTypePath =
+    camera.targetElementType === "assembly" ? "assemblies" : "partstudios";
+  const wOrV = workspaceId ? `w/${workspaceId}` : `v/${versionId}`;
+
+  const url = new URL(
+    `https://cad.onshape.com/api/v10/${elementTypePath}/d/${documentId}/${wOrV}/e/${camera.targetElementId}/shadedviews`
+  );
+  url.searchParams.set("viewMatrix", viewMatrixTo12(camera.viewMatrix));
+  url.searchParams.set("outputWidth", "360");
+  url.searchParams.set("outputHeight", "240");
+  url.searchParams.set("pixelSize", "0"); // 0 = fit to model extents, per Onshape forum guidance
+  url.searchParams.set("includeSurfaces", "true");
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`shadedviews request failed: ${res.status} ${await res.text()}`);
+  }
+
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+let activePipCamera = null;
+
+async function showPip(camera) {
+  activePipCamera = camera;
+  pipTitle.textContent = camera.name;
+  pipStatus.textContent = "loading…";
+  pipImg.style.display = "none";
+
+  try {
+    const objectUrl = await fetchShadedView(camera);
+    pipImg.src = objectUrl;
+    pipImg.style.display = "block";
+    pipStatus.textContent = "";
+  } catch (err) {
+    console.error(err);
+    pipStatus.textContent = "failed to load — see console";
+  }
+}
+
+function refreshPip() {
+  if (activePipCamera) showPip(activePipCamera);
+}
   statusEl.className = cls;
   statusEl.textContent = text;
 }
@@ -168,13 +295,20 @@ function renderCameras() {
 
     const delBtn = document.createElement("button");
     delBtn.textContent = "remove";
+    delBtn.className = "remove-btn";
     delBtn.onclick = () => {
       const updated = loadCameras().filter((_, idx) => idx !== i);
       saveCameras(updated);
       renderCameras();
     };
 
+    const previewBtn = document.createElement("button");
+    previewBtn.textContent = "preview";
+    previewBtn.className = "preview-btn";
+    previewBtn.onclick = () => showPip(cam);
+
     li.appendChild(info);
+    li.appendChild(previewBtn);
     li.appendChild(delBtn);
     listEl.appendChild(li);
   });
@@ -199,6 +333,7 @@ async function placeCamera() {
       name: `Camera ${loadCameras().length + 1}`,
       targetElementId,
       targetElementName,
+      targetElementType,
       projectionType: camData.projectionType,
       viewMatrix: camData.viewMatrix,
       projectionMatrix: camData.projectionMatrix,
@@ -223,6 +358,7 @@ async function placeCamera() {
 
 pickBtn.addEventListener("click", openTabPicker);
 placeBtn.addEventListener("click", placeCamera);
+refreshPipBtn.addEventListener("click", refreshPip);
 
 // ---------- Boot ----------
 

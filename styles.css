@@ -92,6 +92,51 @@ h1 { font-size: 14px; margin: 0; }
   border: none;
   background: none;
   cursor: pointer;
-  color: #c0392b;
   font-size: 12px;
+}
+
+#cameraList .preview-btn {
+  color: #1B5FAA;
+  margin-right: 8px;
+}
+
+#cameraList .remove-btn {
+  color: #c0392b;
+}
+
+#pip {
+  margin-top: 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: white;
+  padding: 8px;
+}
+
+#pipHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+#refreshPipBtn {
+  background: #1B5FAA;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+#pipStatus {
+  font-size: 11px;
+  color: #888;
+}
+
+#pipImg {
+  width: 100%;
+  border-radius: 3px;
+  margin-top: 4px;
 }
