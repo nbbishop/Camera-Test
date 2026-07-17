@@ -27,6 +27,24 @@ h1 { font-size: 14px; margin: 0; }
 #status.ready { color: #1B5FAA; }
 #status.error { color: #c0392b; }
 
+#pickBtn {
+  width: 100%;
+  padding: 6px;
+  margin-bottom: 4px;
+  background: white;
+  border: 1px solid #1B5FAA;
+  color: #1B5FAA;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.target-label {
+  font-size: 11px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
 #placeBtn {
   width: 100%;
   padding: 8px;

@@ -1,53 +1,71 @@
 # Camera Bookmarks — Onshape Application Extension
 
-Captures the current viewport camera (position/target/FOV) and saves it
-as a named bookmark, scoped to the current document/workspace/element.
+Captures the current viewport camera (view/projection matrices + FOV)
+from a chosen Part Studio/Assembly tab and saves it as a named
+bookmark.
 
-## What's here
+## Architecture (confirmed against current official docs)
 
-- `index.html` — panel UI
-- `app.js` — client-messaging handshake + camera capture + storage
-- `styles.css` — Onshape-blue styling to match your other tools
+- This app must be registered as an **Element Tab** extension, not
+  Element Right Panel — `requestCameraProperties` is only supported
+  there.
+- Element Tab does **not** support `{$...}` Action URL placeholders.
+  Leave the Action URL plain: `https://nbbishop.github.io/Camera-Test/`
+  — Onshape appends `documentId`, `workspaceId`/`versionId`,
+  `elementId`, `server`, etc. as query params automatically.
+- Your app's own `elementId` (its tab) is different from the
+  `graphicsElementId` of the Part Studio/Assembly you want the camera
+  from. Since your app is a separate tab, it has no automatic
+  knowledge of "the tab you were just looking at" — you pick the
+  target explicitly via Onshape's native **Select Item** dialog
+  (`openSelectItemDialog` / `itemSelectedInSelectItemDialog`
+  messages), no custom REST calls needed.
 
 ## Setup
 
-1. **Host it** — same pattern as your McMaster app: push this folder to
-   a GitHub Pages repo (public HTTPS URL required for the iframe).
+1. Host this folder on GitHub Pages (unchanged).
+2. Dev portal → your app → Extensions → set **Location = Element Tab**.
+   Action URL = plain hosted URL, no placeholder tokens.
+3. In a document: **+ menu → Add Application** → pick this app. It
+   opens as its own tab.
 
-2. **Register the app** — cad.onshape.com → App Store → Dev Portal →
-   create a new app.
-   - Type: **Application Extension**
-   - Extension location: pick a toolbar/panel location so it's visible
-     while modeling
-   - Point it at your hosted `index.html`
-   - Onshape appends `documentId`, `workspaceId` (or `versionId`),
-     `elementId`, and `server` as query params automatically — the
-     code already reads these.
+## Workflow
 
-3. **OAuth** — set up your client ID/secret in the dev portal per
-   Onshape's Application Extension flow. This build doesn't touch
-   OAuth directly since `requestCameraProperties` rides the
-   client-messaging channel, not REST — but the dev portal still
-   requires OAuth config to register the extension at all.
+1. Open the Part Studio/Assembly tab you want to bookmark from, orbit
+   to the view you want.
+2. Switch to this extension's tab.
+3. Click **Choose Target Tab…** — Onshape's native picker opens; pick
+   the Part Studio/Assembly.
+4. Click **+ Place Camera Here** — captures that tab's current camera.
 
-## Things I couldn't verify and you should check first
+Note: per Onshape's docs, the target tab "must have been opened at
+least once in the current session" for `requestCameraProperties` to
+return `isValid: true`.
 
-I don't have access to Onshape's live client-messaging schema, so two
-things in `app.js` are best-guesses flagged with comments — confirm
-both against your browser console once the handshake is running:
+## Stored camera shape
 
-- **Handshake message name**: I used `applicationInit` as the message
-  Onshape sends once it's acknowledged your app. If nothing fires,
-  `console.debug` in the `message` listener's `default` case will show
-  you what Onshape is actually sending — adjust the `case` to match.
-- **`cameraProperties` response shape**: field names for position /
-  target / FOV are guessed (`camData.position`, `camData.fieldOfView`,
-  etc.) with fallbacks. Log `camData` once and fix the mapping in
-  `placeCamera()` to the real field names.
+```json
+{
+  "name": "Camera 1",
+  "targetElementId": "...",
+  "targetElementName": "Part Studio 1",
+  "projectionType": "perspective | orthographic",
+  "viewMatrix": [16 numbers],
+  "projectionMatrix": [16 numbers],
+  "verticalFieldOfView": number,
+  "viewportWidth": number,
+  "viewportHeight": number,
+  "createdAt": timestamp
+}
+```
 
-## Not yet built (next steps per our earlier plan)
+Stored raw (not decomposed into position/target) since the exact
+index mapping for camera position within `viewMatrix` wasn't fully
+verifiable from docs alone — log a real response and confirm before
+building the gizmo/PIP renderer that will need to decompose this.
+
+## Not yet built
 
 - Camera gizmo rendering (Three.js frustum overlay at saved transform)
-- Live PIP viewport showing the saved camera's POV as you edit
+- Live PIP viewport showing the saved camera's POV while editing
 - Syncing bookmarks to the document itself instead of `localStorage`
-  (so they're shared across users/machines)

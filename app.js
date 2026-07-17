@@ -1,56 +1,69 @@
 // ---------------------------------------------------------------
-// Onshape Application Extension: Camera Bookmarks
-// Handles the client-messaging handshake, requests camera state,
-// and stores named camera bookmarks per document/workspace/element.
+// Onshape Application Extension: Camera Bookmarks (Element Tab)
 // ---------------------------------------------------------------
 
 const params = new URLSearchParams(window.location.search);
 const documentId = params.get("documentId");
-const workspaceId = params.get("workspaceId") || params.get("versionId");
-const elementId = params.get("elementId");
+const workspaceId = params.get("workspaceId");
+const versionId = params.get("versionId");
+const elementId = params.get("elementId"); // this app's own tab
 const server = params.get("server") || "https://cad.onshape.com";
+
+console.log("%c[boot params]", "background: cyan; color: black;", {
+  documentId, workspaceId, versionId, elementId, server,
+  fullQueryString: window.location.search,
+});
 
 const statusEl = document.getElementById("status");
 const placeBtn = document.getElementById("placeBtn");
+const pickBtn = document.getElementById("pickBtn");
+const targetLabel = document.getElementById("targetLabel");
 const listEl = document.getElementById("cameraList");
 
-let ready = false;
-let pendingCameraRequests = {};
-let requestCounter = 0;
+let targetElementId = null;
+let targetElementName = null;
+let pendingCameraRequest = null;
 
 // ---------- Client messaging plumbing ----------
 
 function postToOnshape(message) {
   window.parent.postMessage(
-    {
-      documentId,
-      workspaceId,
-      elementId,
-      ...message,
-    },
+    { documentId, workspaceId, versionId, elementId, ...message },
     server
   );
+}
+
+function sendApplicationInit() {
+  postToOnshape({ messageName: "applicationInit" });
 }
 
 function sendKeepAlive() {
   postToOnshape({ messageName: "keepAlive" });
 }
 
-function requestCameraProperties() {
+function openTabPicker() {
+  postToOnshape({
+    messageName: "openSelectItemDialog",
+    dialogTitle: "Choose the Part Studio or Assembly to bookmark cameras from",
+    selectPartStudios: true,
+    selectAssemblies: true,
+    selectMultiple: false,
+    showBrowseDocuments: false,
+  });
+}
+
+function requestCameraProperties(graphicsElementId) {
   return new Promise((resolve, reject) => {
-    const requestId = ++requestCounter;
-    pendingCameraRequests[requestId] = { resolve, reject };
+    pendingCameraRequest = { resolve, reject };
 
     postToOnshape({
       messageName: "requestCameraProperties",
-      requestId, // NOTE: confirm Onshape echoes this back in the response;
-                 // if not, fall back to matching on messageName + timestamp.
+      graphicsElementId,
     });
 
-    // Fail safe if Onshape never responds
     setTimeout(() => {
-      if (pendingCameraRequests[requestId]) {
-        delete pendingCameraRequests[requestId];
+      if (pendingCameraRequest) {
+        pendingCameraRequest = null;
         reject(new Error("requestCameraProperties timed out"));
       }
     }, 4000);
@@ -58,33 +71,34 @@ function requestCameraProperties() {
 }
 
 window.addEventListener("message", (event) => {
-  // SECURITY: only accept messages from the Onshape server this
-  // iframe was loaded from. Do not remove this check.
+  console.log(
+    "%c[raw message]", "background: orange; color: black;",
+    "origin:", event.origin, "| expected:", server, "| data:", event.data
+  );
+
   if (event.origin !== server) return;
 
   const data = event.data;
   if (!data || !data.messageName) return;
 
   switch (data.messageName) {
-    case "applicationInit":
-      // Onshape acknowledges our app is registered and ready.
-      ready = true;
-      setStatus("ready", "connected");
+    case "itemSelectedInSelectItemDialog":
+      targetElementId = data.elementId;
+      targetElementName = data.elementName || data.elementId;
+      targetLabel.textContent = `Target: ${targetElementName}`;
       placeBtn.disabled = false;
       break;
 
     case "cameraProperties": {
-      const req = pendingCameraRequests[data.requestId];
-      if (req) {
-        delete pendingCameraRequests[data.requestId];
+      if (pendingCameraRequest) {
+        const req = pendingCameraRequest;
+        pendingCameraRequest = null;
         req.resolve(data);
       }
       break;
     }
 
     default:
-      // Unhandled message types land here during development —
-      // console.log to see what Onshape actually sends.
       console.debug("Unhandled client message:", data);
   }
 });
@@ -94,23 +108,18 @@ function setStatus(cls, text) {
   statusEl.textContent = text;
 }
 
-// Onshape will not message an app that hasn't first announced itself.
 function initHandshake() {
-  postToOnshape({ messageName: "applicationInit" });
+  sendApplicationInit();
   sendKeepAlive();
   setInterval(sendKeepAlive, 20000);
 
-  // If we don't hear back, surface that instead of hanging on
-  // "connecting..." forever.
-  setTimeout(() => {
-    if (!ready) setStatus("error", "no response from Onshape");
-  }, 5000);
+  setStatus("ready", "connected");
 }
 
 // ---------- Storage ----------
 
 function storageKey() {
-  return `cameras:${documentId}:${workspaceId}:${elementId}`;
+  return `cameras:${documentId}:${workspaceId || versionId}:${elementId}`;
 }
 
 function loadCameras() {
@@ -148,7 +157,10 @@ function renderCameras() {
     name.textContent = cam.name;
     const meta = document.createElement("div");
     meta.className = "cam-meta";
-    meta.textContent = `fov ${cam.fov?.toFixed(1) ?? "?"} · placed ${new Date(
+    const fovText = cam.projectionType === "orthographic"
+      ? "orthographic"
+      : `fov ${cam.verticalFieldOfView?.toFixed(1) ?? "?"}`;
+    meta.textContent = `${cam.targetElementName} · ${fovText} · placed ${new Date(
       cam.createdAt
     ).toLocaleTimeString()}`;
     info.appendChild(name);
@@ -169,21 +181,30 @@ function renderCameras() {
 }
 
 async function placeCamera() {
+  if (!targetElementId) return;
+
   placeBtn.disabled = true;
   placeBtn.textContent = "capturing…";
 
   try {
-    const camData = await requestCameraProperties();
+    const camData = await requestCameraProperties(targetElementId);
 
-    // NOTE: the exact shape of `camData` depends on what Onshape's
-    // client actually returns — verify field names once you see a
-    // real response in the console, then adjust the mapping below.
+    if (!camData.isValid) {
+      throw new Error(
+        "Onshape reports this camera is not valid — make sure the target tab has been opened at least once this session."
+      );
+    }
+
     const camera = {
       name: `Camera ${loadCameras().length + 1}`,
-      position: camData.position || camData.viewMatrix?.position,
-      target: camData.target || camData.viewMatrix?.target,
-      fov: camData.fieldOfView ?? camData.fov,
-      isOrtho: camData.isOrthographic ?? camData.orthographic ?? false,
+      targetElementId,
+      targetElementName,
+      projectionType: camData.projectionType,
+      viewMatrix: camData.viewMatrix,
+      projectionMatrix: camData.projectionMatrix,
+      verticalFieldOfView: camData.verticalFieldOfView,
+      viewportWidth: camData.viewportWidth,
+      viewportHeight: camData.viewportHeight,
       createdAt: Date.now(),
     };
 
@@ -200,6 +221,7 @@ async function placeCamera() {
   }
 }
 
+pickBtn.addEventListener("click", openTabPicker);
 placeBtn.addEventListener("click", placeCamera);
 
 // ---------- Boot ----------
