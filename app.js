@@ -48,7 +48,7 @@ function openTabPicker() {
     selectPartStudios: true,
     selectAssemblies: true,
     selectMultiple: false,
-    showBrowseDocuments: false,
+    showBrowseDocuments: true,
   });
 }
 
