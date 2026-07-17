@@ -10,20 +10,13 @@ const workspaceId = params.get("workspaceId") || params.get("versionId");
 const elementId = params.get("elementId");
 const server = params.get("server") || "https://cad.onshape.com";
 
-console.log("%c[boot params]", "background: cyan; color: black;", {
-  documentId,
-  workspaceId,
-  elementId,
-  server,
-  fullQueryString: window.location.search,
-});
-
 const statusEl = document.getElementById("status");
 const placeBtn = document.getElementById("placeBtn");
 const listEl = document.getElementById("cameraList");
 
 let ready = false;
-let pendingCameraRequest = null;
+let pendingCameraRequests = {};
+let requestCounter = 0;
 
 // ---------- Client messaging plumbing ----------
 
@@ -45,21 +38,19 @@ function sendKeepAlive() {
 
 function requestCameraProperties() {
   return new Promise((resolve, reject) => {
-    pendingCameraRequest = { resolve, reject };
+    const requestId = ++requestCounter;
+    pendingCameraRequests[requestId] = { resolve, reject };
 
-    // Onshape's documented client message shape is just
-    // {documentId, workspaceId, elementId, messageName} — no custom
-    // fields. An earlier version of this added a `requestId` field,
-    // which may have made the message invalid and gotten it silently
-    // dropped. Keeping this minimal until we confirm otherwise.
     postToOnshape({
       messageName: "requestCameraProperties",
+      requestId, // NOTE: confirm Onshape echoes this back in the response;
+                 // if not, fall back to matching on messageName + timestamp.
     });
 
     // Fail safe if Onshape never responds
     setTimeout(() => {
-      if (pendingCameraRequest) {
-        pendingCameraRequest = null;
+      if (pendingCameraRequests[requestId]) {
+        delete pendingCameraRequests[requestId];
         reject(new Error("requestCameraProperties timed out"));
       }
     }, 4000);
@@ -67,18 +58,6 @@ function requestCameraProperties() {
 }
 
 window.addEventListener("message", (event) => {
-  // Log everything BEFORE the origin check — if event.origin doesn't
-  // exactly match `server`, the check below silently drops the
-  // message before it's ever seen. Logging first turns that into a
-  // visible mismatch instead of dead silence.
-  console.log(
-    "%c[raw message]",
-    "background: orange; color: black;",
-    "origin:", event.origin,
-    "| expected server:", server,
-    "| data:", event.data
-  );
-
   // SECURITY: only accept messages from the Onshape server this
   // iframe was loaded from. Do not remove this check.
   if (event.origin !== server) return;
@@ -87,10 +66,17 @@ window.addEventListener("message", (event) => {
   if (!data || !data.messageName) return;
 
   switch (data.messageName) {
+    case "applicationInit":
+      // Onshape acknowledges our app is registered and ready.
+      ready = true;
+      setStatus("ready", "connected");
+      placeBtn.disabled = false;
+      break;
+
     case "cameraProperties": {
-      if (pendingCameraRequest) {
-        const req = pendingCameraRequest;
-        pendingCameraRequest = null;
+      const req = pendingCameraRequests[data.requestId];
+      if (req) {
+        delete pendingCameraRequests[data.requestId];
         req.resolve(data);
       }
       break;
@@ -108,17 +94,17 @@ function setStatus(cls, text) {
   statusEl.textContent = text;
 }
 
-// Onshape will not message an app that hasn't first sent a valid
-// message. keepAlive is the documented first message to send — there
-// is no separate "ready" reply to wait for, so we enable the button
-// right after sending it.
+// Onshape will not message an app that hasn't first announced itself.
 function initHandshake() {
+  postToOnshape({ messageName: "applicationInit" });
   sendKeepAlive();
   setInterval(sendKeepAlive, 20000);
 
-  ready = true;
-  setStatus("ready", "connected");
-  placeBtn.disabled = false;
+  // If we don't hear back, surface that instead of hanging on
+  // "connecting..." forever.
+  setTimeout(() => {
+    if (!ready) setStatus("error", "no response from Onshape");
+  }, 5000);
 }
 
 // ---------- Storage ----------
