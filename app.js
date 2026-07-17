@@ -231,6 +231,8 @@ async function showPip(camera) {
 function refreshPip() {
   if (activePipCamera) showPip(activePipCamera);
 }
+
+function setStatus(cls, text) {
   statusEl.className = cls;
   statusEl.textContent = text;
 }
