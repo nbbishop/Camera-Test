@@ -15,8 +15,7 @@ const placeBtn = document.getElementById("placeBtn");
 const listEl = document.getElementById("cameraList");
 
 let ready = false;
-let pendingCameraRequests = {};
-let requestCounter = 0;
+let pendingCameraRequest = null;
 
 // ---------- Client messaging plumbing ----------
 
@@ -38,19 +37,21 @@ function sendKeepAlive() {
 
 function requestCameraProperties() {
   return new Promise((resolve, reject) => {
-    const requestId = ++requestCounter;
-    pendingCameraRequests[requestId] = { resolve, reject };
+    pendingCameraRequest = { resolve, reject };
 
+    // Onshape's documented client message shape is just
+    // {documentId, workspaceId, elementId, messageName} — no custom
+    // fields. An earlier version of this added a `requestId` field,
+    // which may have made the message invalid and gotten it silently
+    // dropped. Keeping this minimal until we confirm otherwise.
     postToOnshape({
       messageName: "requestCameraProperties",
-      requestId, // NOTE: confirm Onshape echoes this back in the response;
-                 // if not, fall back to matching on messageName + timestamp.
     });
 
     // Fail safe if Onshape never responds
     setTimeout(() => {
-      if (pendingCameraRequests[requestId]) {
-        delete pendingCameraRequests[requestId];
+      if (pendingCameraRequest) {
+        pendingCameraRequest = null;
         reject(new Error("requestCameraProperties timed out"));
       }
     }, 4000);
@@ -63,13 +64,14 @@ window.addEventListener("message", (event) => {
   if (event.origin !== server) return;
 
   const data = event.data;
+  console.log("%c[Onshape message]", "background: yellow; color: black;", data);
   if (!data || !data.messageName) return;
 
   switch (data.messageName) {
     case "cameraProperties": {
-      const req = pendingCameraRequests[data.requestId];
-      if (req) {
-        delete pendingCameraRequests[data.requestId];
+      if (pendingCameraRequest) {
+        const req = pendingCameraRequest;
+        pendingCameraRequest = null;
         req.resolve(data);
       }
       break;
